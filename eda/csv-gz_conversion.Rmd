@@ -1,0 +1,56 @@
+---
+title: "CSV.GZ Conversion to CSV"
+author: "Evan Canfield"
+date: "10/31/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Library
+The following are library packages used in this analysis.
+```{r library}
+if (!require(pacman)) {install.packages('pacman')} 
+p_load(
+    feather
+  , here
+  , Hmisc
+  , janitor
+  , skimr
+  , tidyverse
+)
+```
+
+# Process CSV.GZ Files
+The files provided in the MIMIC-III dataset are *csv.gz* files. This file type is a compressed *csv* used for database applications. The purpose of this section is to import the file, clean the files with janitor, and then export as a standard csv file for easier use in this project.
+
+## Import
+```{r message=FALSE}
+admissions <- read_csv(file = here("data/raw_csv.gz/ADMISSIONS.csv.gz"))
+
+callout <-  read_csv(file = here("data/raw_csv.gz/CALLOUT.csv.gz"))
+
+caregivers <-  read_csv(file = here("data/raw_csv.gz/CAREGIVERS.csv.gz"))
+
+```
+
+## Clean Column Names With Janitor
+```{r}
+admissions <- clean_names(dat = admissions, case = "snake")
+
+callout <- clean_names(dat = callout, case = "snake")
+
+caregivers <- clean_names(dat = caregivers, case = "snake")
+```
+
+## Write To CSV
+```{r}
+write.csv(x = admissions, file = here("data/raw_csv/admissions.csv"), row.names = FALSE)
+
+write.csv(x = callout, file = here("data/raw_csv/callout.csv"), row.names = FALSE)
+
+write.csv(x = caregivers, file = here("data/raw_csv/caregivers.csv"), row.names = FALSE)
+```
+
