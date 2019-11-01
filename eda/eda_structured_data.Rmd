@@ -39,16 +39,122 @@ set.seed(5590)
 #chartevents <- read_feather(here("data/raw_feather/chartevents.feather"))
 #note_events <- read_feather(here("data/raw_feather/noteevents.feather"))
 
-here::here("data/raw_feather/labevents.feather")
+#here::here("data/raw_feather/labevents.feather")
 
 # Lab Results
-lab_events <- read_feather(here::here("data/raw_feather/labevents.feather"))
+#lab_events <- read_feather(here::here("data/raw_feather/labevents.feather"))
 
 #Lab Item Definitions
-d_labitems <- read_feather(here::here("data/raw_feather/d_labitems.feather"))
+#d_labitems <- read_feather(here::here("data/raw_feather/d_labitems.feather"))
+
+#Admissions
+admissions <- read_feather(here::here("data/raw_feather/admissions.feather"))
 ```
 
 # Processing
+# Admissions
+```{r}
+glimpse(admissions)
+```
+
+The following actions and transformations are required.
+* Add leading zeros for Subject ID to maintain a consistent number of digits
+* Row_ID does not link to any other table and can be dropped. 
+* The use of "" for NA is replaced with NA
+* Date-Time Objects stored as characters converted to Date-Time
+* Convert boolean flags to factor
+* Convert Admission Location to factor
+* Convert HAMID to character.
+* Replace blank with NA
+
+```{r}
+admissions_1 <- admissions %>% 
+  select(-row_id) %>% 
+  mutate(
+    admittime = ymd_hms(admittime),
+    dischtime = ymd_hms(dischtime),
+    deathtime = ymd_hms(deathtime),
+    edregtime = ymd_hms(edregtime),
+    edouttime = ymd_hms(edouttime)
+  ) %>% 
+  mutate(
+    hospital_expire_flag = as.factor(hospital_expire_flag),
+    has_chartevents_data = as.factor(has_chartevents_data)
+    
+  ) %>% 
+  mutate(
+    subject_id = as.character(subject_id),
+    hadm_id  =as.character(hadm_id)
+  ) %>% 
+  mutate(
+    language = na_if(language,""),
+    religion  = na_if(religion ,"")
+    )
+
+# Reinstate leading zeros for Subject_ID
+admissions_1$subject_id  <- str_pad(
+  string = admissions_1$subject_id, 
+  width = 5, 
+  side = "left", 
+  pad = "0")
+```
+
+```{r}
+admissions_1 %>% 
+  head(10) 
+```
+
+```{r}
+describe(admissions_1)
+```
+
+```{r}
+skim(admissions_1)
+```
+
+Next we need to determine if and when a persons next visit was, and how long between visits.
+
+* **next_admit_dt**: If a subject_id has multiple visits, this is the next visit date and time.
+* **admit_delta** : Length of time between visits
+* **readmit_30**: Yes, if admit_delta is < 30 days
+
+```{r}
+admissions_2 <- admissions_1 %>% 
+  group_by(subject_id) %>% 
+  mutate(
+    next_admit_dt = lead(admittime, order_by = admittime),
+    admit_span_days = round(as.numeric(difftime(time1 = next_admit_dt, time2 = admittime, units = "days")),1),
+    readmit_30 = case_when(
+      admit_span_days > 30 ~ 0,
+      admit_span_days <= 30 ~ 1
+    ),
+    readmit_30 = replace_na(readmit_30,0)
+  ) %>% 
+  select(subject_id:deathtime, next_admit_dt, admit_span_days, readmit_30, everything())
+
+admissions_2$readmit_30 <- as.factor(admissions_2$readmit_30)
+```
+
+```{r}
+glimpse(admissions_3)
+```
+
+View People with multiple admissions.
+```{r}
+admissions_3_re_ad <- admissions_3 %>% 
+  filter(!is.na(admit_span_days))
+
+glimpse(admissions_3_re_ad)
+```
+
+List of subjects with multiple admissions and admission count.
+```{r}
+admissions_3_re_ad %>% 
+  tally() %>% 
+  arrange(-n)
+```
+
+
 ## Lab Events
 ```{r}
 glimpse(lab_events)
