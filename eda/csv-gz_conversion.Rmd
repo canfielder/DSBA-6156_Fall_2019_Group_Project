@@ -14,11 +14,14 @@ The following are library packages used in this analysis.
 ```{r library}
 if (!require(pacman)) {install.packages('pacman')} 
 p_load(
-    feather
+    bit64
+  , data.table
+  , ff
+  , feather
   , here
-  , Hmisc
   , janitor
-  , skimr
+  , R.utils
+  , stringr
   , tidyverse
 )
 ```
@@ -27,30 +30,89 @@ p_load(
 The files provided in the MIMIC-III dataset are *csv.gz* files. This file type is a compressed *csv* used for database applications. The purpose of this section is to import the file, clean the files with janitor, and then export as a standard csv file for easier use in this project.
 
 ## Import
-```{r message=FALSE}
-admissions <- read_csv(file = here("data/raw_csv.gz/ADMISSIONS.csv.gz"))
-
-callout <-  read_csv(file = here("data/raw_csv.gz/CALLOUT.csv.gz"))
-
-caregivers <-  read_csv(file = here("data/raw_csv.gz/CAREGIVERS.csv.gz"))
-
+```{r message=FALSE, eval=TRUE}
+note_events <- read_csv(file = here("data/raw_csv.gz/noteevents.csv.gz"))
 ```
 
 ## Clean Column Names With Janitor
-```{r}
+```{r clean df, eval=FALSE}
 admissions <- clean_names(dat = admissions, case = "snake")
 
 callout <- clean_names(dat = callout, case = "snake")
 
 caregivers <- clean_names(dat = caregivers, case = "snake")
+
+#chartevents <- clean_names(dat = chartevents, case = "snake")
+
+cptevents <- clean_names(dat = cptevents, case = "snake")
+
+
+
+d_icd_diagnosis <- clean_names(dat = d_icd_diagnosis, case = "snake")
+
+d_icd_procedures <- clean_names(dat = d_icd_procedures, case = "snake")
+
+d_items <- clean_names(dat = d_items, case = "snake")
+
+d_labitems <- clean_names(dat = d_labitems, case = "snake")
 ```
 
-## Write To CSV
+## Write To Feather
+```{r write_feather, eval=FALSE}
+write_feather(x = admissions, path = here("data/raw_feather/admissions.feather"))
+
+write_feather(x = callout, path = here("data/raw_feather/callout.feather"))
+
+write_feather(x = caregivers, path = here("data/raw_feather/caregivers.feather"))
+
+#write_feather(x = chartevents, path = here("data/raw_feather/chartevents.feather"))
+
+write_feather(x = cptevents, path = here("data/raw_feather/cptevents.feather"))
+
+write_feather(x = d_cpt, path = here("data/raw_feather/d_cpt.feather"))
+
+write_feather(x = d_icd_diagnosis, path = here("data/raw_feather/d_icd_diagnosis.feather"))
+
+write_feather(x = d_icd_procedures, path = here("data/raw_feather/d_icd_procedures.feather"))
+
+write_feather(x = d_items, path = here("data/raw_feather/d_items.feather"))
+
+write_feather(x = d_labitems, path = here("data/raw_feather/d_labitems.feather"))
+```
+
+## Create list of Files
 ```{r}
-write.csv(x = admissions, file = here("data/raw_csv/admissions.csv"), row.names = FALSE)
+#create list of csv.gz files
+file_names_original <- list.files(
+  path = here("data/raw_csv.gz"),
+  pattern="*csv.gz"
+    )
 
-write.csv(x = callout, file = here("data/raw_csv/callout.csv"), row.names = FALSE)
+#convert to lower case
+file_names <- tolower(file_names_original)
 
-write.csv(x = caregivers, file = here("data/raw_csv/caregivers.csv"), row.names = FALSE)
+#extract file name from extension
+file_names <- gsub("\\..*","", file_names)
 ```
+
+## Loop for Conversion to Feather
+```{r eval=FALSE}
+while(i < length(file_names) + 1){
+    # Create File Path to Pull csv.gz file
+    filepath_read <- paste0(here("data/raw_csv.gz"),"/",file_names_original[i])
+     
+    # Create file path string to save feather file
+    filepath_write <- paste0(here("data/raw_feather"),"/",file_names[i],".feather")
+
+    # Read CSV
+    df <- fread(filepath_read)
+
+    # Clean Column Names CSV
+    df <- clean_names(dat = df, case = "snake")
+
+    # Write to Feather File
+    write_feather(x = df, path = filepath_write)
+}
+```
+
 

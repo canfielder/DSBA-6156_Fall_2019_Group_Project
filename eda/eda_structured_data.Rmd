@@ -9,4 +9,86 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Library
+The following are library packages used in this analysis.
+```{r library}
+if (!require(pacman)) {install.packages('pacman')} 
+p_load(
+    caTools
+  , data.table
+  , feather
+  , here
+  , Hmisc
+  , janitor
+  , lubridate
+  , R.utils
+  , skimr
+  , stringr
+  , tidyverse
+)
+```
 
+# Set Seed
+```{r}
+set.seed(5590)
+```
+
+
+# Import
+```{r}
+#chartevents <- read_feather(here("data/raw_feather/chartevents.feather"))
+#note_events <- read_feather(here("data/raw_feather/noteevents.feather"))
+
+here::here("data/raw_feather/labevents.feather")
+
+# Lab Results
+lab_events <- read_feather(here::here("data/raw_feather/labevents.feather"))
+
+#Lab Item Definitions
+d_labitems <- read_feather(here::here("data/raw_feather/d_labitems.feather"))
+```
+
+# Processing
+## Lab Events
+```{r}
+glimpse(lab_events)
+```
+
+The following actions and transformations are required.
+* Row_ID does not link to any other table and can be dropped. 
+* The remaining ID variables should converted from integer. Subject_ID is set to factor.
+* The use of "" for NA is replaced with NA
+* charttime converted to date_time object
+* Remove quotation marks for value and valueuom
+
+Time zone does not matter. It is assumed every unique visit id is at the same location. We also only care about time duration, so any final time date will be ther difference between to date time values.
+
+
+```{r}
+lab_events_1 <- lab_events %>% 
+  select(-row_id) %>% 
+  mutate(
+    subject_id = as.factor(subject_id),
+    hadm_id = as.character(hadm_id),
+    itemid = as.factor(itemid),
+    valueuom = na_if(valueuom, ""),
+    flag = na_if(flag, ""),
+    charttime = ymd_hms(charttime)
+    )
+```
+
+```{r}
+glimpse(lab_events_1)
+```
+
+```{r}
+skim(lab_events_1)
+```
+
+## Lab Items Definitions
+
+First a small subset of the data will be extracted just to ensure process times are faster for exploratory reasons.
+
+```{r}
+sample <- sample.split(df$BAD, SplitRatio = 0.7)
+```
