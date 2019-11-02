@@ -42,13 +42,19 @@ set.seed(5590)
 #here::here("data/raw_feather/labevents.feather")
 
 # Lab Results
-#lab_events <- read_feather(here::here("data/raw_feather/labevents.feather"))
+lab_events <- read_feather(here::here("data/raw_feather/labevents.feather"))
 
 #Lab Item Definitions
-#d_labitems <- read_feather(here::here("data/raw_feather/d_labitems.feather"))
+d_labitems <- read_feather(here::here("data/raw_feather/d_labitems.feather"))
 
 #Admissions
 admissions <- read_feather(here::here("data/raw_feather/admissions.feather"))
+
+#Patient
+patient <- read_feather(here::here("data/raw_feather/patients.feather"))
+
+# Discharge Diagnosis
+diagnoses_icd <- read_feather(here::here("data/raw_feather/diagnoses_icd.feather"))
 ```
 
 # Processing
@@ -88,7 +94,8 @@ admissions_1 <- admissions %>%
   ) %>% 
   mutate(
     language = na_if(language,""),
-    religion  = na_if(religion ,"")
+    religion  = na_if(religion ,""),
+    marital_status  = na_if(marital_status ,"")
     )
 
 # Reinstate leading zeros for Subject_ID
@@ -112,31 +119,126 @@ describe(admissions_1)
 skim(admissions_1)
 ```
 
+Patient Information is also required. The following data from the Patients table will be joined with the admission table. Several transformations are required before joining the data frames.
+
+* Convert Date of Birth to Date Time
+* Convert Gender to Factor
+* Pad leading zeros to subject_id
+
+```{r patient_transformation}
+patient_1 <- patient %>% 
+  select(subject_id:dob) %>% 
+  mutate(
+    gender = as.factor(gender),
+    dob = as_date(ymd_hms(dob)), 
+    subject_id = str_pad(
+      string = subject_id, 
+      width = 5, 
+      side = "left", 
+      pad = "0"
+    )
+  )
+```
+
+The admission and patient data frame are joined on subject_id
+```{r patient_admission_join}
+admissions_2 <- admissions_1 %>% 
+  left_join(patient_1, by = "subject_id")
+```
+
+
+```{r inspect_join}
+describe(admissions_2)
+```
+
+The following processing will be performed on the dataset:
+
+Drop
+
+* Type = Newborn
+* Death = Yes
+* Language
+* Religion
+* edouttime
+* edregtime 
+* diagnosis
+
+Modify
+
+* Missing Marital Status to New Variable
+
+Create
+
+* Calculate Length of Stay. Filter out if less than zero. This is assumed to be an error.
+* Calcuate Age at Admission
+
+
+```{r}
+admissions_2 %>% 
+  mutate(
+    admitdate = as_date(admittime),
+    age = round(time_length(difftime(time1 = admitdate, time2 = dob, units = "days"), unit = "years"),1)
+  ) %>% 
+  select(dob, admitdate, admittime, age) %>% 
+  arrange() %>% 
+  ggplot(mapping = aes(x = "", y = age)) + 
+  geom_violin()
+```
+
+
+```{r}
+admissions_3 <- admissions_2 %>% 
+  select(-c(edregtime, edouttime, language, religion, deathtime, diagnosis)) %>% 
+  filter(hospital_expire_flag == 0) %>% 
+  filter(admission_type != "NEWBORN") %>% 
+  select(-hospital_expire_flag) %>% 
+  mutate(
+    age_yr = round(time_length(difftime(time1 = as_date(admittime), time2 = dob, units = "days"), unit = "years"),1),
+    length_stay_hr = round(as.numeric(difftime(time1 = dischtime, time2 = admittime, units = "hours")),1),
+    marital_status = replace_na(data = marital_status, replace = "MISSING")
+  ) %>% 
+  filter(length_stay_hr > 0)
+         
+describe(admissions_3)
+```
+
+```{r age_hist}
+ggplot(data = admissions_3,
+       aes(x = age_yr)) + 
+  geom_density()
+```
+
+
 Next we need to determine if and when a persons next visit was, and how long between visits.
 
 * **next_admit_dt**: If a subject_id has multiple visits, this is the next visit date and time.
-* **admit_delta** : Length of time between visits
+* **next_admit_type**: The type of visit.
+* **admit_delta**: Length of time between visits
 * **readmit_30**: Yes, if admit_delta is < 30 days
 
 ```{r}
-admissions_2 <- admissions_1 %>% 
+admissions_4 <- admissions_3 %>% 
   group_by(subject_id) %>% 
   mutate(
     next_admit_dt = lead(admittime, order_by = admittime),
+    next_admit_type = lead(admission_type, order_by = admittime),
     admit_span_days = round(as.numeric(difftime(time1 = next_admit_dt, time2 = admittime, units = "days")),1),
     readmit_30 = case_when(
-      admit_span_days > 30 ~ 0,
-      admit_span_days <= 30 ~ 1
+      admit_span_days > 30 & next_admit_type != 'ELECTIVE' ~ 0,
+      admit_span_days <= 30 & next_admit_type != 'ELECTIVE' ~ 1
     ),
     readmit_30 = replace_na(readmit_30,0)
   ) %>% 
-  select(subject_id:deathtime, next_admit_dt, admit_span_days, readmit_30, everything())
+  select(-c(admittime, dischtime, dob, next_admit_dt:admit_span_days))
 
-admissions_2$readmit_30 <- as.factor(admissions_2$readmit_30)
+admissions_4$readmit_30 <- as.factor(admissions_4$readmit_30))
+
+admissions_4 %>% 
+  head()
 ```
 
 ```{r}
-glimpse(admissions_3)
+describe(admissions_4)
 ```
 
 View People with multiple admissions.
@@ -150,10 +252,10 @@ glimpse(admissions_3_re_ad)
 List of subjects with multiple admissions and admission count.
 ```{r}
 admissions_3_re_ad %>% 
+  filter(readmit_30 == 1) %>% 
   tally() %>% 
   arrange(-n)
 ```
-
 
 ## Lab Events
 ```{r}
