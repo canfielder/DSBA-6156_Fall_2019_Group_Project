@@ -55,6 +55,15 @@ patient <- read_feather(here::here("data/raw_feather/patients.feather"))
 
 # Discharge Diagnosis
 diagnoses_icd <- read_feather(here::here("data/raw_feather/diagnoses_icd.feather"))
+
+#ICU Stays
+icu_stays <- read_feather(here::here("data/raw_feather/icustays.feather"))
+
+# Microbio
+micro_bio <- read_feather(here::here("data/raw_feather/microbiologyevents.feather"))
+
+# Prescriptions
+prescriptions <- read_feather(here::here("data/raw_feather/prescriptions.feather"))
 ```
 
 # Processing
@@ -116,7 +125,7 @@ describe(admissions_1)
 ```
 
 ```{r}
-skim(admissions_1)
+#skim(admissions_1)
 ```
 
 Patient Information is also required. The following data from the Patients table will be joined with the admission table. Several transformations are required before joining the data frames.
@@ -229,33 +238,55 @@ admissions_4 <- admissions_3 %>%
     ),
     readmit_30 = replace_na(readmit_30,0)
   ) %>% 
-  select(-c(admittime, dischtime, dob, next_admit_dt:admit_span_days))
+  select(-c(admittime, dischtime, dob, next_admit_dt:admit_span_days)) %>% 
+  ungroup()
 
-admissions_4$readmit_30 <- as.factor(admissions_4$readmit_30))
-
-admissions_4 %>% 
-  head()
+admissions_4$readmit_30 <- as.factor(admissions_4$readmit_30)
 ```
 
 ```{r}
 describe(admissions_4)
 ```
 
-View People with multiple admissions.
-```{r}
-admissions_3_re_ad <- admissions_3 %>% 
-  filter(!is.na(admit_span_days))
+We will now add IUC stay information. The ICU stay table will be joined to the Admission table. If there is an ICU stay there will be an icustay_id associated with an hamdid. If the join returns NA there is no ICU stay.
+```{r icu_join}
+#Prepare ICU data frame
+icu_stays_1 <- icu_stays %>% 
+  select(hadm_id) %>% 
+  mutate(
+    hadm_id = as.character(hadm_id),
+    ) %>% 
+  distinct(hadm_id) %>% 
+  mutate(
+    icu_stay = as.factor(1)
+  )
 
-glimpse(admissions_3_re_ad)
+icu_stays_1 %>% 
+  head()
+
+glimpse(admissions_4)
+
+admissions_5 <- admissions_4 %>% 
+  left_join(icu_stays_1, by = "hadm_id")
+
+glimpse(admissions_5)
 ```
+
+```{r}
+skim(admissions_5)
+```
+
+
 
 List of subjects with multiple admissions and admission count.
 ```{r}
-admissions_3_re_ad %>% 
+admissions_5 %>% 
   filter(readmit_30 == 1) %>% 
-  tally() %>% 
-  arrange(-n)
+  group_by(subject_id) %>% 
+  summarise(n = n()) %>% 
+  arrange(desc(n))
 ```
+
 
 ## Lab Events
 ```{r}
@@ -276,9 +307,14 @@ Time zone does not matter. It is assumed every unique visit id is at the same lo
 lab_events_1 <- lab_events %>% 
   select(-row_id) %>% 
   mutate(
-    subject_id = as.factor(subject_id),
+    subject_id = str_pad(
+      string = subject_id, 
+      width = 5, 
+      side = "left", 
+      pad = "0"
+    ),
     hadm_id = as.character(hadm_id),
-    itemid = as.factor(itemid),
+    itemid = as.character(itemid),
     valueuom = na_if(valueuom, ""),
     flag = na_if(flag, ""),
     charttime = ymd_hms(charttime)
@@ -290,13 +326,104 @@ glimpse(lab_events_1)
 ```
 
 ```{r}
-skim(lab_events_1)
+#skim(lab_events_1)
 ```
 
-## Lab Items Definitions
+Outpatient data is included in the Lab Events table, with hadm_id left blank. These entries will be removed.
+```{r}
+lab_events_2 <- lab_events_1 %>% 
+  drop_na(hadm_id)
 
-First a small subset of the data will be extracted just to ensure process times are faster for exploratory reasons.
+glimpse(lab_events_2)
+```
+
+With outpatient records removed we will now filter the data frame to only include itemids which we are concerted with.
 
 ```{r}
-sample <- sample.split(df$BAD, SplitRatio = 0.7)
+important_features = c(
+  "51006", # Urea - Blood
+  "51265", # Platelet Count
+  "50960",
+  "50862",
+  "50893"
+)
+
+lab_events_3 <- lab_events_2 %>% 
+  filter(itemid %in% important_features) %>% 
+  select(-c(subject_id, charttime, value, valueuom)) %>% 
+  mutate(
+    flag = if_else(
+      condition = flag == "abnormal", 
+      true = 1, 
+      false = 0, 
+      missing = 0
+    ),
+    flag = as.character(flag)
+  ) %>% 
+  drop_na(valuenum)
+```
+
+To compute the min, mean, and max of the lab tests we have, I need to convert the data frame from long to wide.
+
+```{r}
+# Create Data frame with HADM_ID and Flag
+lab_events_flag <- lab_events_3 %>% 
+  select(hadm_id, flag) %>% 
+  distinct()
+
+#Remove Flag From Lab Events Data Frame
+lab_events_3 <- lab_events_3 %>% 
+  select(-flag)
+
+lab_events_4 <- lab_events_3 %>% 
+  group_by(hadm_id, itemid) %>% 
+  mutate(
+    #min = min(valuenum),
+    mean = mean(valuenum)
+    #max = max(valuenum)
+  ) %>% 
+  select(-valuenum) %>% 
+  ungroup() %>% 
+  distinct()
+
+lab_events_4 %>% head()
+```
+
+In order for each item_id to be it's own variable we need to pivot this data frame.
+```{r}
+# lab_events_5 <- lab_events_4 %>% 
+#   pivot_wider(
+#     names_from = itemid, 
+#     values_from = min:max
+#     )
+# 
+# glimpse(lab_events_5)
+# 
+# lab_events_5 %>% head()
+# 
+# skim(lab_events_5)
+```
+
+Unfortunately there are too many missing values for many of the tests, except platelets (51265). In order to caputre these tests, we will drop the missing platelet tests and use the min, mean, and max. For all of the tests, including platelets, we will also develop two new columns
+
+* ..._test_run: Indicates if a test was run
+* ..._test_abnormal: If a test is run, was it abnormal
+
+
+To capture if a micro-biology culture was drawn...
+
+## Prescriptions
+```{r}
+describe(prescriptions)
+```
+
+### To Do
+* Using filters, check the number of NA returned using the grouping method for one test and compare to the other example.
+* Create boolean category for if a microbiology sample was taken
+* Drop 100 missing records for platelet tests
+* Create two boolean values for each lab test, if test was taken, and if flagged.
+
+
+```{r}
+#sample <- sample.split(df$BAD, SplitRatio = 0.7)
 ```
