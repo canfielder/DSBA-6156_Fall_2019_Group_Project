@@ -5,6 +5,7 @@
 
 # Folders
 data/
+additional_documents/
 
 # File Types
 eda/*.html
