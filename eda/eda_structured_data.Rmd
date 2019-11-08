@@ -121,7 +121,7 @@ admissions_1 %>%
 ```
 
 ```{r}
-describe(admissions_1)
+#describe(admissions_1)
 ```
 
 ```{r}
@@ -157,7 +157,7 @@ admissions_2 <- admissions_1 %>%
 
 
 ```{r inspect_join}
-describe(admissions_2)
+#describe(admissions_2)
 ```
 
 The following processing will be performed on the dataset:
@@ -414,7 +414,7 @@ To capture if a micro-biology culture was drawn...
 
 ## Prescriptions
 ```{r}
-describe(prescriptions)
+#describe(prescriptions)
 ```
 
 ### To Do

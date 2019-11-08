@@ -1,0 +1,64 @@
+---
+title: "MIMIC III Dataset - Structured Data Analysis"
+author: "Evan Canfield"
+date: "10/31/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Library
+The following are library packages used in this analysis.
+```{r library}
+if (!require(pacman)) {install.packages('pacman')} 
+p_load(
+    caTools
+  , data.table
+  , feather
+  , here
+  , Hmisc
+  , janitor
+  , lubridate
+  , R.utils
+  , skimr
+  , stringr
+  , tidyverse
+)
+```
+
+# Set Seed
+```{r}
+set.seed(5590)
+```
+
+
+# Import
+```{r}
+# Note Events
+note_events <- read_feather(here::here("data/raw_feather/noteevents.feather"))
+```
+
+# Processing
+## Note Events
+```{r}
+# Drop Note Column
+note_events_1 <- note_events %>% 
+  select(-c(text, row_id, chartdate:storetime, cgid))
+
+note_events_1 %>% skim()
+```
+
+Check type of reports for Discharge Summary. About 7% of the sample of Discharge Summaries are not the base report but are addendums. These shoudl not be dropped, and should be included with the appropriate Discharge Summary no matter the way forward. 
+```{r}
+note_events_2 <- note_events_1 %>% 
+  filter(category == 'Discharge summary')
+
+note_events_2 %>% describe()
+```
+
+```{r}
+note_events_1 %>% describe()
+```
+
