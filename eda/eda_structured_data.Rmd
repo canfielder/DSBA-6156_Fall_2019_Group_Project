@@ -14,8 +14,8 @@ The following are library packages used in this analysis.
 ```{r library}
 if (!require(pacman)) {install.packages('pacman')} 
 p_load(
-    caTools
-  , data.table
+    data.table
+  , fastDummies
   , feather
   , here
   , Hmisc
@@ -64,6 +64,9 @@ micro_bio <- read_feather(here::here("data/raw_feather/microbiologyevents.feathe
 
 # Prescriptions
 prescriptions <- read_feather(here::here("data/raw_feather/prescriptions.feather"))
+
+# List of Hadm_ID and Readmit_30 After Note Event Drop NA. Check to see the differences
+export_from_notes <- read_feather(here::here("data/r_feather_output/export_for_admissions.feather"))
 ```
 
 # Processing
@@ -258,18 +261,19 @@ icu_stays_1 <- icu_stays %>%
     ) %>% 
   distinct(hadm_id) %>% 
   mutate(
-    icu_stay = as.factor(1)
+    icu_stay = (1)
   )
 
-icu_stays_1 %>% 
-  head()
-
-glimpse(admissions_4)
+icu_stays_1
 
 admissions_5 <- admissions_4 %>% 
-  left_join(icu_stays_1, by = "hadm_id")
-
+  left_join(icu_stays_1, by = "hadm_id") %>%
+  mutate(icu_stay = replace_na(data = icu_stay, replace = 0)) %>% 
+  mutate(icu_stay = as.factor(icu_stay))
+  
 glimpse(admissions_5)
+
+skim(admissions_5)
 ```
 
 ```{r}
@@ -294,6 +298,7 @@ glimpse(lab_events)
 ```
 
 The following actions and transformations are required.
+
 * Row_ID does not link to any other table and can be dropped. 
 * The remaining ID variables should converted from integer. Subject_ID is set to factor.
 * The use of "" for NA is replaced with NA
@@ -338,19 +343,18 @@ glimpse(lab_events_2)
 ```
 
 With outpatient records removed we will now filter the data frame to only include itemids which we are concerted with.
-
 ```{r}
 important_features = c(
   "51006", # Urea - Blood
   "51265", # Platelet Count
-  "50960",
-  "50862",
-  "50893"
+  "50960", # Magnesium
+  "50862", # Albumin
+  "50893"  # Calcium
 )
 
 lab_events_3 <- lab_events_2 %>% 
   filter(itemid %in% important_features) %>% 
-  select(-c(subject_id, charttime, value, valueuom)) %>% 
+  select(-c(charttime, value, valueuom)) %>% 
   mutate(
     flag = if_else(
       condition = flag == "abnormal", 
@@ -364,7 +368,6 @@ lab_events_3 <- lab_events_2 %>%
 ```
 
 To compute the min, mean, and max of the lab tests we have, I need to convert the data frame from long to wide.
-
 ```{r}
 # Create Data frame with HADM_ID and Flag
 lab_events_flag <- lab_events_3 %>% 
@@ -372,58 +375,280 @@ lab_events_flag <- lab_events_3 %>%
   distinct()
 
 #Remove Flag From Lab Events Data Frame
-lab_events_3 <- lab_events_3 %>% 
+lab_events_3.1 <- lab_events_3 %>%
   select(-flag)
 
 lab_events_4 <- lab_events_3 %>% 
-  group_by(hadm_id, itemid) %>% 
+  group_by(subject_id, hadm_id, itemid) %>% 
   mutate(
     #min = min(valuenum),
-    mean = mean(valuenum)
-    #max = max(valuenum)
+    #max = mean(valuenum),
+    #mean = max(valuenum),
+    flag = as.numeric(flag)
   ) %>% 
-  select(-valuenum) %>% 
   ungroup() %>% 
+  select(-c(valuenum, subject_id)) %>% 
   distinct()
 
 lab_events_4 %>% head()
+
+skim(lab_events_4)
 ```
 
-In order for each item_id to be it's own variable we need to pivot this data frame.
+In order for each item_id to be it's own variable we need to pivot this data frame. WE have also grouped by hadm_id and item_id to see which tests had an abnormal reading, and which tests never did. This was determined by summing the number of flags for a hadmid/itemid group. Anything 1 or greater indicates at least one test was abnormal.NA values were replaced with -1.
+
+* 1: Test was taken and at least one abnormal values were observed
+* 0: Test was taken and zero abnormal values were observed
+* -1: No test was taken
+
 ```{r}
-# lab_events_5 <- lab_events_4 %>% 
-#   pivot_wider(
-#     names_from = itemid, 
-#     values_from = min:max
-#     )
-# 
-# glimpse(lab_events_5)
-# 
-# lab_events_5 %>% head()
-# 
-# skim(lab_events_5)
+
+lab_events_4.1 <- lab_events_4 %>% 
+  group_by(hadm_id, itemid) %>% 
+  summarise(flag = sum(flag)) %>% 
+  ungroup() %>% 
+  mutate(flag = if_else(flag >= 1, 1, 0))
+
+lab_events_4.1
+
+lab_events_5 <- lab_events_4.1 %>%
+  pivot_wider(
+    names_from = itemid,
+    values_from = flag
+    ) %>% 
+  replace(is.na(.), -1)
+
+lab_events_5 %>% head()
+
+skim(lab_events_5)
 ```
 
-Unfortunately there are too many missing values for many of the tests, except platelets (51265). In order to caputre these tests, we will drop the missing platelet tests and use the min, mean, and max. For all of the tests, including platelets, we will also develop two new columns
+Join the lab events table to the admissions table. There are additional missing test values. This implies no test of any type was taken for these mospital admissions. These NAs need to be converted to -1.
+```{r}
+admissions_5.2 <- admissions_5 %>%
+  left_join(lab_events_5)
 
+admissions_5.2 %>% skim()
+
+admissions_5.2 %>% head()
+```
+
+Join the lab events table to the admissions table. There are additional missing test values. This implies no test of any type was taken for these mospital admissions. These NAs need to be converted to -1. Additinoally, the column names will be renamed to the actual test name.
+```{r}
+admissions_5.3 <- admissions_5.2 %>% 
+  rename(
+    albumin = '50862',
+    urea ='51006' ,
+    platelets = '51265',
+    magnesium = '50960',
+    calcium = '50893'
+    ) %>% 
+  replace(is.na(.), -1)
+
+admissions_5.3 %>% skim()
+```
+
+
+### Test Dropping ICU
+The folloing gis a test to see how mnay values would still be missing if non-ICU stays were dropped.
+```{r}
+admissions_5.3 %>% 
+  filter(icu_stay == 1) %>% 
+  skim()
+```
+
+
+### Test - Comparison
+The following is a test using filter to isolate a single of type of test. This is to determine how many people used this test, and compare it to the number of missing values is another project which used this dataset. The current theory is the other project's SQL scripts are wrong.
+```{r}
+lab_events_4.1 <- lab_events_3.1 %>% 
+  select(-subject_id) %>% 
+  filter(itemid == "50893") %>% 
+  group_by(hadm_id, itemid) %>% 
+  mutate(
+    #min = min(valuenum),
+    mean_50893 = mean(valuenum)
+    #max = max(valuenum)
+  ) %>% 
+  ungroup() %>% 
+  select(-c(valuenum, itemid)) %>% 
+  distinct()
+  
+#lab_events_4.1 %>% head()
+
+#glimpse(lab_events_4.1)
+
+admissions_5.1 <- admissions_5 %>%
+  left_join(lab_events_4.1, by = "hadm_id")
+
+admissions_5.1 %>% skim()
+```
+
+
+Unfortunately there are too many missing values for many of the tests.
 * ..._test_run: Indicates if a test was run
 * ..._test_abnormal: If a test is run, was it abnormal
 
 
-To capture if a micro-biology culture was drawn...
-
-## Prescriptions
-```{r}
-#describe(prescriptions)
-```
-
 ### To Do
 * Using filters, check the number of NA returned using the grouping method for one test and compare to the other example.
+** Done - Still Returning NAs
 * Create boolean category for if a microbiology sample was taken
-* Drop 100 missing records for platelet tests
 * Create two boolean values for each lab test, if test was taken, and if flagged.
+
+### Merge Note Events
+To create a final set of hadm_ids the Note_Event hadm_id will be joined to the admissions table and NAs will be dropped. Not all observations in the Note Events table had a corresponding hadm_id in the main data frame.
+
+```{r}
+export_from_notes_1 <- export_from_notes %>% 
+  mutate(dummy = 0) %>% 
+select(-readmit_30)
+
+
+admissions_6 <- admissions_5.3 %>% 
+  left_join(y = export_from_notes_1, 
+            by = c("hadm_id")) %>% 
+  drop_na(dummy) %>% 
+  select(-dummy)
+
+admissions_6 %>% skim()
+```
+
+
+The following script creates two variables for lab tests.
+```{r}
+admissions_7 <- admissions_6 %>% 
+  mutate(
+    albumin_test = as.factor(if_else(albumin >= 0 , 1, 0)),
+    albumin_flag = as.factor(if_else(albumin == 1 , 1, 0)),
+    calcium_test = as.factor(if_else(calcium >= 0 , 1, 0)),
+    calcium_flag = as.factor(if_else(calcium == 1 , 1, 0)),
+    magnesium_test = as.factor(if_else(magnesium >= 0 , 1, 0)),
+    magnesium_flag = as.factor(if_else(magnesium == 1 , 1, 0)),
+    platelets_test = as.factor(if_else(platelets >= 0 , 1, 0)),
+    platelets_flag = as.factor(if_else(platelets == 1 , 1, 0)),
+    urea_test = as.factor(if_else(urea >= 0 , 1, 0)),
+    urea_flag = as.factor(if_else(urea == 1 , 1, 0))
+  ) %>% 
+  select(-c(albumin, calcium, magnesium, platelets, urea))
+
+admissions_7 %>% skim()
+```
+
+### Micro Bio
+```{r}
+micro_bio_1 <- micro_bio %>% 
+  mutate(hadm_id = as.character(hadm_id))
+
+micro_bio_1 %>% skim()
+```
+
+Create a data frame of hadm_ids from the microbiololgy table along with flag variable indicating a microbiology test was taken.
+```{r}
+micro_bio_2 <- micro_bio_1 %>% 
+  select(hadm_id) %>% 
+  distinct() %>% 
+  mutate(micro_bio_test = 1)
+
+micro_bio_2 %>% skim()
+```
+
+Join microbiology table to admissions. Drop dummy.
+```{r}
+admissions_8 <- admissions_7 %>% 
+  left_join(micro_bio_2, by = "hadm_id") %>% 
+  mutate(micro_bio_test = as.factor(replace_na(micro_bio_test, 0)))
+
+admissions_8 %>% skim()
+```
+
+Drop has_chartevents_data
+```{r}
+admissions_9 <- admissions_8 %>% 
+  select(-has_chartevents_data)
+```
+
+## Processing For Python Models
+To be used in the machine learning models in python two major changes need to be made:
+
+1. COnvert categorical variales to an n-1 set of binary dummy variables.
+2. Convert binary variables currently modeled as factors to integers.
+
+First convert the binary factors to integers. All the factors in the dataframe are binary except gender. In order to use a general function, I converted gender from factor to character first, making all factors in the dataframe binary. Then I converted the binary factors to integers.
+```{r}
+admissions_10 <- admissions_9 %>% 
+  mutate(gender = as.character(gender)) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(c(seq(12,length(admissions_9),1)), as.integer)
+```
+
+Now the Categorical variables need to be converted to dummy binary variables.
+
+* admission_type  
+* admission_location
+* discharge_location 
+
 
 
 ```{r}
-#sample <- sample.split(df$BAD, SplitRatio = 0.7)
+
+df_categorical = c(
+  "admission_type",
+  "admission_location",
+  "discharge_location",
+  "insurance",
+  "marital_status",
+  "ethnicity",
+  "gender"
+)
+
+admissions_11 <- admissions_10 %>% 
+  dummy_cols(
+    select_columns = df_categorical,
+    remove_most_frequent_dummy = TRUE
+    ) %>% 
+   select(-df_categorical) %>% 
+  select(hadm_id, subject_id, readmit_30 , everything())
 ```
+
+Final inspection of admissions data frame before export.
+```{r}
+admissions_export <- admissions_11
+
+#admissions_export %>% glimpse()
+```
+# Export
+## Structured Data
+```{r}
+path <- here::here("data/r_feather_output/df_structured_export.feather")
+
+write_feather(x = admissions_export, path = path)
+```
+
+## hadm_id / readmmit_30 For Notes
+The processed admisssions data frame is stripped down to the hadm_id and readmit_30 variables. This new data frame is exported to be used with the note_events analysis.
+```{r}
+admissions__readmit_30 <- admissions_export %>% 
+  select(hadm_id, readmit_30)
+
+#admissions__readmit_30 %>% skim()
+
+path <- here::here("data/r_feather_output/export_for_notes.feather")
+
+write_feather(x = admissions__readmit_30, path = path)
+```
+
+# Random Tests and Checks
+## Check NAs
+Atfer processing the Note Events Table, there were about ~2000 less observations than in the processed admissions data frame. The following analysis is to compare the two dataframes to see what the new NAs have in common. If all observations are now ICU stays we may be ablet to use other values.
+
+The skim summary below shows that there are still a large amount of records without and ICU stay. There was not complete overlap, as I was initially curious about.
+```{r}
+#What happens when you drop all new NAs
+admissions_5.2 %>% 
+  left_join(y = export_from_notes, 
+            by = c("hadm_id")) %>% 
+  drop_na() %>% 
+  skim()
+```
+
