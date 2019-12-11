@@ -20,8 +20,8 @@ p_load(
   , here
   , Hmisc
   , janitor
-  , kableExtra
   , lubridate
+  , naiar
   , purr
   , R.utils
   , skimr
@@ -35,9 +35,10 @@ p_load(
 set.seed(5590)
 ```
 
+
 # Import
 ```{r}
-#chartevents <- read_feather(here("data/raw_feather/chartevents.feather"))
+#chartevents <- read_feather(here::here("./data/raw_feather/chartevents.feather"))
 #note_events <- read_feather(here("data/raw_feather/noteevents.feather"))
 
 #here::here("data/raw_feather/labevents.feather")
@@ -57,9 +58,6 @@ patient <- read_feather(here::here("data/raw_feather/patients.feather"))
 # Discharge Diagnosis
 diagnoses_icd <- read_feather(here::here("data/raw_feather/diagnoses_icd.feather"))
 
-# ICD-9 Info
-d_icd_diagnoses <-  read_feather(here::here("data/raw_feather/d_icd_diagnoses.feather"))
-
 #ICU Stays
 icu_stays <- read_feather(here::here("data/raw_feather/icustays.feather"))
 
@@ -70,7 +68,7 @@ micro_bio <- read_feather(here::here("data/raw_feather/microbiologyevents.feathe
 prescriptions <- read_feather(here::here("data/raw_feather/prescriptions.feather"))
 
 # List of Hadm_ID and Readmit_30 After Note Event Drop NA. Check to see the differences
-export_from_notes <- read_feather(here::here("data/r_feather_output/export_for_admissions.feather"))
+# export_from_notes <- read_feather(here::here("data/r_feather_output/export_for_admissions.feather"))
 ```
 
 # Processing
@@ -126,7 +124,6 @@ admissions_1$subject_id  <- str_pad(
 admissions_1 %>% 
   head(10) 
 ```
-
 
 ```{r}
 #describe(admissions_1)
@@ -189,6 +186,7 @@ Create
 * Calculate Length of Stay. Filter out if less than zero. This is assumed to be an error.
 * Calcuate Age at Admission
 
+
 ```{r}
 admissions_2 %>% 
   mutate(
@@ -204,7 +202,7 @@ admissions_2 %>%
 
 ```{r}
 admissions_3 <- admissions_2 %>% 
-  select(-c(edregtime, edouttime, language, religion, deathtime)) %>% 
+  select(-c(edregtime, edouttime, language, religion, deathtime, diagnosis)) %>% 
   filter(hospital_expire_flag == 0) %>% 
   filter(admission_type != "NEWBORN") %>% 
   select(-hospital_expire_flag) %>% 
@@ -232,27 +230,68 @@ Next we need to determine if and when a persons next visit was, and how long bet
 * **admit_delta**: Length of time between visits
 * **readmit_30**: Yes, if admit_delta is < 30 days
 
+First we determine what the next appointment time and type will be for each hostpial admission.
+
+
+
 ```{r}
+# Create Dummy Time For Next Appointment
+dummy_time <- ymd_hms("1000-01-01 12:23:34")
+
+# Next Appointment Flag is for noting which hospital admissions had follow up appointments, but were elective and replaced with NA
 admissions_4 <- admissions_3 %>% 
   group_by(subject_id) %>% 
   mutate(
     next_admit_dt = lead(admittime, order_by = admittime),
-    next_admit_type = lead(admission_type, order_by = admittime),
-    admit_span_days = round(as.numeric(difftime(time1 = next_admit_dt, time2 = dischtime, units = "days")),1),
-    readmit_30 = case_when(
-      admit_span_days > 30 & next_admit_type != 'ELECTIVE' ~ 0,
-      admit_span_days <= 30 & next_admit_type != 'ELECTIVE' ~ 1
-    ),
-    readmit_30 = replace_na(readmit_30,0)
+    next_admit_type = lead(admission_type, order_by = admittime)
   ) %>% 
-  select(-c(admittime, dischtime, dob, next_admit_dt:admit_span_days)) %>% 
+  ungroup() %>% 
+  mutate(next_app_flag = case_when(is.na(next_admit_type) ~ 0,
+                                   next_admit_type == 'ELECTIVE' ~ 2,
+                                   TRUE ~ 1)) %>% 
+  select(subject_id:dischtime,admission_type, next_admit_dt:next_app_flag, everything())
+
+  
+# If Next Appointment is Electve, convert to NA. 
+admissions_4.1 <- admissions_4 %>% 
+  mutate(
+    next_admit_dt = replace_na(next_admit_dt, dummy_time),
+    next_admit_type = na_if(next_admit_type, 'ELECTIVE'),
+    next_admit_dt = if_else(next_app_flag == 2, dummy_time, next_admit_dt),
+    next_admit_dt = na_if(next_admit_dt, dummy_time)
+  )
+
+admissions_4.1
+
+# Backfill Remeved Elective Dates.
+# If there is an emergency eevent after an elective event, the emergency time and type will fill that elective space.
+admissions_4.2 <- admissions_4.1 %>% 
+  group_by(subject_id) %>% 
+  fill(next_admit_dt, .direction = "up") %>% 
+  fill(next_admit_type, .direction = "up") %>% 
   ungroup()
 
-admissions_4$readmit_30 <- as.factor(admissions_4$readmit_30)
+
+ #Determine if the next admission qualifies as a Positive Event
+admissions_4.3 <- admissions_4.2 %>%
+  mutate(
+    admit_span_days = round(as.numeric(difftime(time1 = next_admit_dt, time2 = admittime, units = "days")),1),
+    readmit_30 = case_when(admit_span_days <= 30 ~ 1,
+                          TRUE ~ 0
+                          ),
+    readmit_30 = as.factor(readmit_30)
+  ) %>% 
+  select(-next_app_flag) %>% 
+  select(subject_id, hadm_id, readmit_30, everything())
+  
+admissions_4.3 %>% 
+  filter(subject_id=="00339")
+
+  
 ```
 
 ```{r}
-describe(admissions_4$readmit_30)
+describe(admissions_4.3$readmit_30)
 ```
 
 We will now add IUC stay information. The ICU stay table will be joined to the Admission table. If there is an ICU stay there will be an icustay_id associated with an hamdid. If the join returns NA there is no ICU stay.
@@ -270,8 +309,7 @@ icu_stays_1 <- icu_stays %>%
 
 icu_stays_1
 
-admissions_5 <- admissions_4 %>% 
-  select(-diagnosis) %>% 
+admissions_5 <- admissions_4.3 %>% 
   left_join(icu_stays_1, by = "hadm_id") %>%
   mutate(icu_stay = replace_na(data = icu_stay, replace = 0)) %>% 
   mutate(icu_stay = as.factor(icu_stay))
@@ -368,6 +406,8 @@ lab_events_3 <- lab_events_2 %>%
     flag = as.character(flag)
   ) %>% 
   drop_na(valuenum)
+
+lab_events_3 %>% skim()
 ```
 
 To compute the min, mean, and max of the lab tests we have, I need to convert the data frame from long to wide.
@@ -384,9 +424,9 @@ lab_events_3.1 <- lab_events_3 %>%
 lab_events_4 <- lab_events_3 %>% 
   group_by(subject_id, hadm_id, itemid) %>% 
   mutate(
-    #min = min(valuenum),
-    #max = mean(valuenum),
-    #mean = max(valuenum),
+    min = min(valuenum),
+    max = mean(valuenum),
+    mean = max(valuenum),
     flag = as.numeric(flag)
   ) %>% 
   ungroup() %>% 
@@ -398,14 +438,14 @@ lab_events_4 %>% head()
 skim(lab_events_4)
 ```
 
-In order for each item_id to be it's own variable we need to pivot this data frame. WE have also grouped by hadm_id and item_id to see which tests had an abnormal reading, and which tests never did. This was determined by summing the number of flags for a hadmid/itemid group. Anything 1 or greater indicates at least one test was abnormal.NA values were replaced with -1.
+## Flag Data Fram
+In order for each item_id to be it's own variable we need to pivot this data frame. We have also grouped by hadm_id and item_id to see which tests had an abnormal reading, and which tests never did. This was determined by summing the number of flags for a hadmid/itemid group. Anything 1 or greater indicates at least one test was abnormal.NA values were replaced with -1.
 
 * 1: Test was taken and at least one abnormal values were observed
 * 0: Test was taken and zero abnormal values were observed
 * -1: No test was taken
 
 ```{r}
-
 lab_events_4.1 <- lab_events_4 %>% 
   group_by(hadm_id, itemid) %>% 
   summarise(flag = sum(flag)) %>% 
@@ -426,6 +466,7 @@ lab_events_5 %>% head()
 skim(lab_events_5)
 ```
 
+
 Join the lab events table to the admissions table. There are additional missing test values. This implies no test of any type was taken for these mospital admissions. These NAs need to be converted to -1.
 ```{r}
 admissions_5.2 <- admissions_5 %>%
@@ -436,7 +477,37 @@ admissions_5.2 %>% skim()
 admissions_5.2 %>% head()
 ```
 
-Join the lab events table to the admissions table. There are additional missing test values. This implies no test of any type was taken for these mospital admissions. These NAs need to be converted to -1. Additionally, the column names will be renamed to the actual test name.
+## Values Data Fram
+```{r}
+lab_events_4 %>% head()
+
+lab_events_4.1_value = lab_events_4 %>% 
+  select(-flag)
+
+lab_events_4.1_value %>% head()
+
+
+lab_events_5_value <- lab_events_4.1_value %>%
+  ungroup() %>% 
+  pivot_wider(
+    names_from = itemid,
+    values_from = min:mean
+    )
+
+lab_events_5_value %>% head()
+
+lab_events_5_value %>% skim
+
+admissions_5 %>% skim()
+
+admissions_5.1_value <- admissions_5 %>% 
+  left_join(lab_events_5_value, by = "hadm_id")
+
+admissions_5.1_value %>% skim()
+```
+
+
+Join the lab events table to the admissions table. There are additional missing test values. This implies no test of any type was taken for these mospital admissions. These NAs need to be converted to -1. Additinoally, the column names will be renamed to the actual test name.
 ```{r}
 admissions_5.3 <- admissions_5.2 %>% 
   rename(
@@ -570,20 +641,14 @@ admissions_9 <- admissions_8 %>%
 
 ### Inspect Distribution of Numeric
 ```{r}
-p = admissions_9 %>%
+admissions_9 %>%
   mutate(length_stay_hr_log = log(length_stay_hr, base = 2),
          age_yr_log = log(age_yr, base = 2)) %>% 
   keep(is.numeric) %>% 
-  rename('Age' = age_yr, 'Age - Log Transformed' = age_yr_log, 'Length of Stay (hr)' = length_stay_hr, 
-         'Length of Stay (hr) - Log Transformed' = length_stay_hr_log) %>% 
   pivot_longer(cols = everything(),names_to = "key", values_to = "value") %>% 
   ggplot(aes(value, color = key, fill = key)) +
   facet_wrap(~key, ncol = 2, scales = "free") +
-  geom_density() + 
-  xlab(label = 'Value') +
-  ylab(label = 'Density') +
-  theme_minimal() + 
-  theme(legend.position =  'none')
+  geom_density()
 ```
 
 Log transforming length of stay creates a much more normal distribution. The feature will be log transfromed.
@@ -668,7 +733,7 @@ admission_freq <- admissions_9.3 %>%
 admission_freq
 ```
 
-With Admission and Discharge Frequecys, we will join these tables back to admissions. For any category less than 2% we will call it Other. We then drop the new fequency variables.
+With Admission and Discharge Frequecys, we will join these tables back to admissions. For any category less than 2% we will call it Other
 ```{r}
 admissions_9.4 <- admissions_9.3 %>% 
   left_join(discharge_freq, by = "discharge_location") %>% 
@@ -676,10 +741,8 @@ admissions_9.4 <- admissions_9.3 %>%
   mutate(
     discharge_location = if_else(freq_dis < 2, "OTHER", discharge_location),
     admission_location = if_else(freq_ad < 2,"OTHER", admission_location)
-  ) %>% 
-  select(-c(freq_dis, freq_ad))
+  )
 
-admissions_9.4$readmit_30 %>% describe()
 
 # admissions_9.4 %>% 
 #   group_by(discharge_location) %>% 
@@ -696,6 +759,8 @@ admissions_9.4$readmit_30 %>% describe()
 #   arrange(desc(freq_ad)) %>% 
 #   select(-n)
 ```
+
+
 
 
 ## Processing For Python Models
@@ -764,7 +829,7 @@ path <- here::here("data/r_feather_output/export_for_notes.feather")
 write_feather(x = admissions__readmit_30, path = path)
 ```
 
-# Exploratoruy
+# Random Tests and Checks
 ## Check NAs
 Atfer processing the Note Events Table, there were about ~2000 less observations than in the processed admissions data frame. The following analysis is to compare the two dataframes to see what the new NAs have in common. If all observations are now ICU stays we may be ablet to use other values.
 
@@ -777,135 +842,4 @@ admissions_5.2 %>%
   drop_na() %>% 
   skim()
 ```
-
-## Diagnosis check Based on REadmission
-```{r}
-admissions_4 %>% glimpse()
-
-diag_check_readmit_1 <- admissions_4 %>% 
-  filter(readmit_30 == 1)
-
-diag_check_readmit_0 <- admissions_4 %>% 
-  filter(readmit_30 == 0)
-
-diag_check_readmit_1 %>%  
-  select(diagnosis) %>% 
-  group_by(diagnosis) %>% 
-  summarise(n = n()) %>% 
-  arrange(desc(n)) %>% 
-  filter(diagnosis!= "NEWBORN") %>% 
-  rename(Diagnosis = diagnosis, Total = n) %>% 
-  head(10) %>% 
-  kable() %>% 
-  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
-  column_spec(1, width = "7cm")
-```
-
-```{r}
-diag_check_readmit_0 %>%  
-  select(diagnosis) %>% 
-  group_by(diagnosis) %>% 
-  summarise(n = n()) %>% 
-  arrange(desc(n)) %>% 
-  filter(diagnosis!= "NEWBORN") %>% 
-  #mutate(diag_percent = round(n/sum(ad_diag_freq$n)*100,1)) %>% 
-  rename(Diagnosis = diagnosis, Total = n) %>% 
-  head(10) %>% 
-  kable() %>% 
-  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
-  column_spec(1, width = "7cm")
-```
-
-## ICD9 Frequency
-```{r}
-ad_join <- select(admissions_4, hadm_id, readmit_30)
-
-# DEvelop ICD 9 Code Counts
-diag_freq_icd <- diagnoses_icd %>% 
-  select(hadm_id, icd9_code) %>% 
-  mutate(hadm_id  = as.character(hadm_id)) %>% 
-  left_join(ad_join)
-  
-diag_freq_icd
-
-diag_freq_icd %>% 
-  filter(readmit_30 == 0) %>% 
-  group_by(icd9_code) %>% 
-  summarise(n = n()) %>% 
-  arrange(desc(n)) %>% 
-  left_join(d_icd_diagnoses) %>% 
-  select(-c(row_id)) %>% 
-  head(10) %>% 
-  kable() %>% 
-  kable_styling(bootstrap_options = "striped", full_width = F)
-  
-```
-
-```{r}
-
-# Frequency - Radmint = 1
-
-diag_freq_icd %>% 
-  filter(readmit_30 == 1) %>% 
-  group_by(icd9_code) %>% 
-  summarise(n = n()) %>% 
-  arrange(desc(n)) %>% 
-  left_join(d_icd_diagnoses,  by = "icd9_code") %>% 
-  select(-c(row_id)) %>% 
-  head(10) %>% 
-  kable() %>% 
-  kable_styling(bootstrap_options = "striped", full_width = F)
-```
-
-## Log Transformation Plots
-```{r fig.height=10, fig.width=10}
-theme_plot_6 <- function(){
-    theme_classic() +
-    theme(
-      legend.position = "none",
-      axis.ticks = element_blank(), 
-      axis.line = element_line(size = 1.5),
-      panel.grid.minor = element_blank(),
-      axis.text.x = element_text(size = 40),
-      axis.title.x = element_text(size = 40, hjust = 0, margin = margin(t = 10, r = 0, b = 0, l = 0)),
-      axis.text.y = element_text(size = 40),
-      axis.title.y = element_text(size = 45, hjust = 0.90, margin = margin(t = 0, r = 20, b = 0, l = 0)),
-      plot.title = element_text(size = 30, face = "bold", color = color_highlight, hjust = 0),
-      plot.caption = element_text(size = 30, hjust = 1),
-      plot.margin = unit(c(1,6,1,1) , "cm")
-    ) 
-}
-
-theme_log_tran <- function(){
-  theme_minimal() + 
-  theme(
-    axis.title.y = element_text(size = 30, hjust = 0.5, margin = margin(t = 0, r = 5, b = 0, l = 0)),
-    axis.title.x = element_text(size = 30, hjust = 0.5, margin = margin(t = 5, r = 0, b = 0, l = 0)),
-    axis.text = element_text(size = 15),
-    strip.text = element_text(size = 20),
-    legend.position = 'none'
-  )
-}
-
-p_log_tran <- admissions_9 %>%
-  mutate(length_stay_hr_log = log(length_stay_hr, base = 2),
-         age_yr_log = log(age_yr, base = 2)) %>% 
-  keep(is.numeric) %>% 
-  rename('Age\n' = age_yr, 'Age\n(Log Transformed)' = age_yr_log, 'Length of Stay (hr)\n' = length_stay_hr, 
-         'Length of Stay (hr)\n(Log Transformed)' = length_stay_hr_log) %>% 
-  pivot_longer(cols = everything(),names_to = "key", values_to = "value") %>% 
-  ggplot(aes(value, color = key, fill = key)) +
-  facet_wrap(~key, ncol = 2, scales = "free") +
-  geom_histogram(alpha=0.5, bins = 50) + 
-  xlab(label = 'Value') +
-  ylab(label = 'Frequency') +
-  theme_log_tran()
-
-p_log_tran
-
-path = here::here("output_images/density_plot.png")
-
-ggsave(filename = path, plot = p_log_tran, width = 10, height = 10)
-```
-
 

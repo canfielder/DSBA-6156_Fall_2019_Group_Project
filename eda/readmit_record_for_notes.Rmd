@@ -1,0 +1,216 @@
+---
+title: "MIMIC III Dataset - Structured Data Analysis"
+author: "Evan Canfield"
+date: "10/31/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Library
+The following are library packages used in this analysis.
+```{r library}
+if (!require(pacman)) {install.packages('pacman')} 
+p_load(
+    data.table
+  , feather
+  , here
+  , Hmisc
+  , janitor
+  , lubridate
+  , R.utils
+  , skimr
+  , stringr
+  , tidyverse
+)
+```
+
+# Set Seed
+```{r}
+set.seed(5590)
+```
+
+
+# Import
+```{r}
+#Admissions
+admissions <- read_feather(here::here("data/raw_feather/admissions.feather"))
+```
+
+# Processing
+# Admissions
+```{r}
+glimpse(admissions)
+```
+
+
+```{r}
+admissions_1 <- admissions %>% 
+  select(-c(row_id,deathtime, edregtime, edouttime, has_chartevents_data, language, religion, marital_status, admission_location,
+            discharge_location, insurance, ethnicity, diagnosis)) %>% 
+  mutate(
+    admittime = ymd_hms(admittime),
+    dischtime = ymd_hms(dischtime)
+  ) %>% 
+  mutate(
+    hospital_expire_flag = as.factor(hospital_expire_flag)
+    
+  ) %>% 
+  mutate(
+    subject_id = as.character(subject_id),
+    hadm_id  = as.character(hadm_id)
+  )
+
+# Reinstate leading zeros for Subject_ID
+admissions_1$subject_id  <- str_pad(
+  string = admissions_1$subject_id, 
+  width = 5, 
+  side = "left", 
+  pad = "0")
+```
+
+```{r}
+admissions_1 %>% 
+  head(10) 
+```
+
+The following processing will be performed on the dataset:
+
+Drop
+
+* Type = Newborn
+##* Death = Yes
+
+
+Create
+
+* Calculate Length of Stay. Filter out if less than zero. This is assumed to be an error.
+* Calcuate Age at Admission
+
+
+```{r}
+glimpse(admissions_1)
+```
+
+```{r}
+admissions_3 <- admissions_1 %>% 
+  filter(hospital_expire_flag == 0) %>% 
+  filter(admission_type != "NEWBORN") 
+         
+glimpse(admissions_3)
+#describe(admissions_3)
+```
+
+
+
+Next we need to determine if and when a persons next visit was, and how long between visits.
+
+* **next_admit_dt**: If a subject_id has multiple visits, this is the next visit date and time.
+* **next_admit_type**: The type of visit.
+* **admit_delta**: Length of time between visits
+* **readmit_30**: Yes, if admit_delta is < 30 days
+
+### Updated Method - Back Fill
+Did not end up using. There is an error somewhere that is reducing the final number of positives. It should increase it a little.
+```{r}
+# # Create Dummy Time For Next Appointment
+# dummy_time <- ymd_hms("1000-01-01 12:23:34")
+# 
+# # Next Appointment Flag is for noting which hospital admissions had follow up appointments, but were elective and replaced with NA
+# admissions_4 <- admissions_3 %>% 
+#   group_by(subject_id) %>% 
+#   mutate(
+#     next_admit_dt = lead(admittime, order_by = admittime),
+#     next_admit_type = lead(admission_type, order_by = admittime)
+#   ) %>% 
+#   ungroup() %>% 
+#   mutate(next_app_flag = case_when(is.na(next_admit_type) ~ 0,
+#                                    next_admit_type == 'ELECTIVE' ~ 2,
+#                                    TRUE ~ 1)) %>% 
+#   select(subject_id:dischtime,admission_type, next_admit_dt:next_app_flag, everything())
+# 
+#   
+# # If Next Appointment is Electve, convert to NA. 
+# admissions_4.1 <- admissions_4 %>% 
+#   mutate(
+#     next_admit_dt = replace_na(next_admit_dt, dummy_time),
+#     next_admit_type = na_if(next_admit_type, 'ELECTIVE'),
+#     next_admit_dt = if_else(next_app_flag == 2, dummy_time, next_admit_dt),
+#     next_admit_dt = na_if(next_admit_dt, dummy_time)
+#   )
+# 
+# # Backfill Remeved Elective Dates.
+# # If there is an emergency eevent after an elective event, the emergency time and type will fill that elective space.
+# admissions_4.2 <- admissions_4.1 %>% 
+#   group_by(subject_id) %>% 
+#   fill(next_admit_dt, .direction = "up") %>% 
+#   fill(next_admit_type, .direction = "up") %>% 
+#   ungroup()
+# 
+# 
+#  #Determine if the next admission qualifies as a Positive Event
+# admissions_4.3 <- admissions_4.2 %>%
+#   mutate(
+#     admit_span_days = round(as.numeric(difftime(time1 = next_admit_dt, time2 = admittime, units = "days")),1),
+#     readmit_30 = case_when(admit_span_days <= 30 ~ 1,
+#                           TRUE ~ 0
+#                           ),
+#     readmit_30 = as.factor(readmit_30)
+#   ) %>% 
+#   select(-next_app_flag) %>% 
+#   select(subject_id, hadm_id, readmit_30, everything())
+#   
+# admissions_4.3 %>% 
+#   filter(subject_id=="00339")
+# 
+# admissions_4.3 %>% describe()
+
+```
+
+### Original Method - No Back Fill
+```{r}
+admissions_4 <- admissions_3 %>%
+  group_by(subject_id) %>%
+  arrange(admittime) %>%
+  mutate(
+    next_admit_dt = dplyr::lead(admittime, order_by = admittime),
+    next_admit_type = dplyr::lead(admission_type, order_by = admittime),
+    admit_span_days = round(as.numeric(difftime(time1 = next_admit_dt, time2 = dischtime, units = "days")),1),
+    readmit_30 = case_when(
+      admit_span_days > 30 & next_admit_type != 'ELECTIVE' ~ 0,
+      admit_span_days <= 30 & next_admit_type != 'ELECTIVE' ~ 1
+    ),
+    readmit_30 = replace_na(readmit_30,0)
+  ) %>%
+  ungroup() %>%
+  mutate(readmit_30 = as.factor(readmit_30))
+
+admissions_4 %>% describe()
+```
+
+```{r}
+ggplot(data = admissions_4, aes(x = admit_span_days)) +
+  geom_histogram() +
+  xlim(0,365)
+```
+ 
+## Processing For Python Models
+```{r}
+admissions_5 <- admissions_4 %>% 
+  mutate(readmit_30 = as.character(readmit_30)) %>% 
+  mutate(readmit_30 = as.integer(readmit_30)) %>% 
+  select(hadm_id, readmit_30)
+
+
+skim(admissions_5)
+```
+
+## hadm_id / readmmit_30 For Notes
+The processed admisssions data frame is stripped down to the hadm_id and readmit_30 variables. This new data frame is exported to be used with the note_events analysis.
+```{r}
+path <- here::here("data/r_feather_output/export_for_notes.feather")
+
+write_feather(x = admissions_5, path = path)
+```
